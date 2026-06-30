@@ -1,10 +1,30 @@
-import telebot
+import os
 import time
+import telebot
 from datetime import datetime, timedelta
 
-# ==================== CONFIG ====================
-BOT_TOKEN = "7950544493:AAFQnVXYrCj74SNLKVRDuQskhayOtG5GxCA"
-bot = telebot.TeleBot(BOT_TOKEN)
+# ==================== BOT TOKEN ====================
+# Render မှာ Environment Variable ထည့်ပါ
+# ဒါမှမဟုတ် အောက်မှာ Token ကို တိုက်ရိုက်ထည့်ပြီး စမ်းပါ
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+
+# Token မပါရင် Error ပြမယ်
+if not BOT_TOKEN:
+    print("❌ BOT_TOKEN not found in environment variables!")
+    print("📌 Please set BOT_TOKEN in Render Environment Variables")
+    print("📌 Or hardcode it in the code for testing")
+    # စမ်းသပ်ဖို့ ဒီနေရာမှာ Token ထည့်ပြီး အောက်က မှတ်ချက်ဖြုတ်ပါ
+    # BOT_TOKEN = "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+    exit(1)
+
+# Bot ကို Initialize လုပ်မယ်
+try:
+    bot = telebot.TeleBot(BOT_TOKEN)
+    bot.get_me()  # Token မှန်မှန်စစ်မယ်
+    print("✅ Bot token is valid!")
+except Exception as e:
+    print(f"❌ Bot token is invalid: {e}")
+    exit(1)
 
 # ==================== STATES ====================
 STATE_NONE = 0
@@ -21,6 +41,9 @@ user_data = {}
 # Timeout tracking {user_id: timestamp}
 user_timeout = {}
 
+# Processed messages tracking {message_id: True}
+processed_messages = {}
+
 # ==================== HELPER FUNCTIONS ====================
 
 def check_admin_status(chat_id):
@@ -36,7 +59,7 @@ def check_admin_status(chat_id):
             # Get channel info
             title = chat.title
             members_count = getattr(chat, 'members_count', 'Unknown')
-            chat_type = 'Private' if chat.type == 'private' else 'Public' if chat.username else 'Private'
+            chat_type = 'Public' if chat.username else 'Private'
             username = f"@{chat.username}" if chat.username else "None"
             
             return True, title, members_count, chat_type, username
@@ -45,6 +68,7 @@ def check_admin_status(chat_id):
             
     except Exception as e:
         # Bot not in channel or channel doesn't exist
+        print(f"Admin check error: {e}")
         return False, None, None, None, None
 
 def reset_user_state(user_id):
@@ -57,7 +81,7 @@ def reset_user_state(user_id):
 def is_channel_id(text):
     """Check if text is a valid channel ID"""
     try:
-        channel_id = int(text)
+        channel_id = int(text.strip())
         # Channel IDs usually start with -100
         return str(channel_id).startswith('-100')
     except:
@@ -77,6 +101,18 @@ def format_channel_info(title, members_count, chat_type, username):
     info += f"🔒 **Type:** {chat_type}\n"
     info += f"🔗 **Username:** {username}\n"
     return info
+
+def get_main_keyboard():
+    """Create main inline keyboard"""
+    keyboard = telebot.types.InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        telebot.types.InlineKeyboardButton("📌 Set Source Channel", callback_data="setup_source"),
+        telebot.types.InlineKeyboardButton("📌 Set Destination Channel", callback_data="setup_dest"),
+        telebot.types.InlineKeyboardButton("📊 View Settings", callback_data="setup_view"),
+        telebot.types.InlineKeyboardButton("▶️ Start Auto-Forward", callback_data="setup_start"),
+        telebot.types.InlineKeyboardButton("⏹ Stop Auto-Forward", callback_data="setup_stop")
+    )
+    return keyboard
 
 # ==================== COMMAND HANDLERS ====================
 
@@ -158,17 +194,7 @@ Channel ID ကို ဘယ်လိုရှာမလဲ?
 def setup_command(message):
     user_id = message.from_user.id
     reset_user_state(user_id)
-    
-    keyboard = telebot.types.InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        telebot.types.InlineKeyboardButton("📌 Set Source Channel", callback_data="setup_source"),
-        telebot.types.InlineKeyboardButton("📌 Set Destination Channel", callback_data="setup_dest"),
-        telebot.types.InlineKeyboardButton("📊 View Settings", callback_data="setup_view"),
-        telebot.types.InlineKeyboardButton("▶️ Start Auto-Forward", callback_data="setup_start"),
-        telebot.types.InlineKeyboardButton("⏹ Stop Auto-Forward", callback_data="setup_stop")
-    )
-    
-    bot.reply_to(message, "📌 **ရွေးချယ်ပါ။**", reply_markup=keyboard, parse_mode='Markdown')
+    bot.reply_to(message, "📌 **ရွေးချယ်ပါ။**", reply_markup=get_main_keyboard(), parse_mode='Markdown')
 
 @bot.message_handler(commands=['status'])
 def status_command(message):
@@ -186,7 +212,7 @@ def status_command(message):
         try:
             chat = bot.get_chat(source)
             status_text += f"📌 **Source Channel:** {chat.title}\n"
-            status_text += f"🆔 **ID:** {source}\n"
+            status_text += f"🆔 **ID:** `{source}`\n"
         except:
             status_text += f"📌 **Source Channel:** ❌ မရှိတော့ပါ\n"
     else:
@@ -196,7 +222,7 @@ def status_command(message):
         try:
             chat = bot.get_chat(destination)
             status_text += f"📌 **Destination Channel:** {chat.title}\n"
-            status_text += f"🆔 **ID:** {destination}\n"
+            status_text += f"🆔 **ID:** `{destination}`\n"
         except:
             status_text += f"📌 **Destination Channel:** ❌ မရှိတော့ပါ\n"
     else:
@@ -222,21 +248,21 @@ def start_forward(message):
         return
     
     # Check if bot is still admin in both channels
-    source_ok, _, _, _, _ = check_admin_status(data['source'])
-    dest_ok, _, _, _, _ = check_admin_status(data['destination'])
+    source_ok, source_title, _, _, _ = check_admin_status(data['source'])
+    dest_ok, dest_title, _, _, _ = check_admin_status(data['destination'])
     
     if not source_ok:
-        bot.reply_to(message, "❌ Source Channel မှာ Admin မဖြစ်တော့ပါဘူး။ ပြန်စစ်ပါ။")
+        bot.reply_to(message, f"❌ Source Channel (`{data['source']}`) မှာ Admin မဖြစ်တော့ပါဘူး။ ပြန်စစ်ပါ။", parse_mode='Markdown')
         return
     
     if not dest_ok:
-        bot.reply_to(message, "❌ Destination Channel မှာ Admin မဖြစ်တော့ပါဘူး။ ပြန်စစ်ပါ။")
+        bot.reply_to(message, f"❌ Destination Channel (`{data['destination']}`) မှာ Admin မဖြစ်တော့ပါဘူး။ ပြန်စစ်ပါ။", parse_mode='Markdown')
         return
     
     data['forwarding'] = True
     user_data[user_id] = data
     
-    bot.reply_to(message, "✅ **Auto-Forward ကို စတင်လိုက်ပါပြီ။**\nSource Channel မှာ Video တက်တာနဲ့ Destination Channel ကို ပို့ပေးပါ့မယ်။", parse_mode='Markdown')
+    bot.reply_to(message, f"✅ **Auto-Forward ကို စတင်လိုက်ပါပြီ။**\n\n📌 Source: {source_title}\n📌 Destination: {dest_title}\n\nSource Channel မှာ Video တက်တာနဲ့ Destination Channel ကို ပို့ပေးပါ့မယ်။", parse_mode='Markdown')
 
 @bot.message_handler(commands=['stopforward'])
 def stop_forward(message):
@@ -372,27 +398,22 @@ def handle_setup_callback(call):
     
     if action == 'source':
         bot.answer_callback_query(call.id)
-        # Trigger /setsource command
         set_source_command(call.message)
         
     elif action == 'dest':
         bot.answer_callback_query(call.id)
-        # Trigger /setdestination command
         set_destination_command(call.message)
         
     elif action == 'view':
         bot.answer_callback_query(call.id)
-        # Trigger /status command
         status_command(call.message)
         
     elif action == 'start':
         bot.answer_callback_query(call.id)
-        # Trigger /startforward command
         start_forward(call.message)
         
     elif action == 'stop':
         bot.answer_callback_query(call.id)
-        # Trigger /stopforward command
         stop_forward(call.message)
 
 # ==================== AUTO-FORWARD LOGIC ====================
@@ -412,7 +433,7 @@ def handle_channel_post(message):
             dest_id = data.get('destination')
             if dest_id:
                 try:
-                    # Copy message (without "Forwarded from")
+                    # Check if message is video
                     if message.video:
                         # Copy video with caption
                         bot.copy_message(
@@ -421,19 +442,25 @@ def handle_channel_post(message):
                             message_id=message.message_id,
                             caption=message.caption if message.caption else None
                         )
+                        print(f"✅ Video copied from {chat_id} to {dest_id}")
                     else:
-                        # Only copy video messages
+                        # Only copy video messages (skip others)
                         pass
                 except Exception as e:
-                    print(f"Error copying message: {e}")
+                    print(f"❌ Error copying message: {e}")
 
 # ==================== MAIN ====================
 
-print("🤖 Bot is starting...")
+print("=" * 50)
+print("🤖 Channel Auto-Forward Bot")
+print("=" * 50)
+print(f"📌 Bot Username: @{bot.get_me().username}")
 print("📌 Bot is running. Press Ctrl+C to stop.")
+print("=" * 50)
 
 try:
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    # Use polling with error handling
+    bot.polling(none_stop=True, interval=1, timeout=30)
 except KeyboardInterrupt:
     print("\n👋 Bot stopped.")
 except Exception as e:
