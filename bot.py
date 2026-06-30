@@ -14,7 +14,7 @@ if not BOT_TOKEN:
     print("📌 Please set BOT_TOKEN in Render Environment Variables")
     print("📌 Or hardcode it in the code for testing")
     # စမ်းသပ်ဖို့ ဒီနေရာမှာ Token ထည့်ပြီး အောက်က မှတ်ချက်ဖြုတ်ပါ
-    # BOT_TOKEN = "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+    # BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"
     exit(1)
 
 # Bot ကို Initialize လုပ်မယ်
