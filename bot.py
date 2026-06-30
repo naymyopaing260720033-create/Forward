@@ -3,7 +3,7 @@ import time
 from datetime import datetime, timedelta
 
 # ==================== CONFIG ====================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "7950544493:AAFQnVXYrCj74SNLKVRDuQskhayOtG5GxCA"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==================== STATES ====================
