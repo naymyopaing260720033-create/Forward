@@ -1,30 +1,41 @@
 import os
 import time
+import threading
 import telebot
+from flask import Flask, jsonify
 from datetime import datetime, timedelta
 
 # ==================== BOT TOKEN ====================
-# Render မှာ Environment Variable ထည့်ပါ
-# ဒါမှမဟုတ် အောက်မှာ Token ကို တိုက်ရိုက်ထည့်ပြီး စမ်းပါ
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
-# Token မပါရင် Error ပြမယ်
 if not BOT_TOKEN:
     print("❌ BOT_TOKEN not found in environment variables!")
     print("📌 Please set BOT_TOKEN in Render Environment Variables")
-    print("📌 Or hardcode it in the code for testing")
-    # စမ်းသပ်ဖို့ ဒီနေရာမှာ Token ထည့်ပြီး အောက်က မှတ်ချက်ဖြုတ်ပါ
-    # BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"
     exit(1)
 
-# Bot ကို Initialize လုပ်မယ်
+# ==================== INITIALIZE BOT ====================
 try:
     bot = telebot.TeleBot(BOT_TOKEN)
-    bot.get_me()  # Token မှန်မှန်စစ်မယ်
+    bot.get_me()
     print("✅ Bot token is valid!")
 except Exception as e:
     print(f"❌ Bot token is invalid: {e}")
     exit(1)
+
+# ==================== INITIALIZE FLASK ====================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return jsonify({
+        "status": "running",
+        "bot": bot.get_me().username,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy"})
 
 # ==================== STATES ====================
 STATE_NONE = 0
@@ -32,16 +43,9 @@ STATE_WAITING_FOR_SOURCE = 1
 STATE_WAITING_FOR_DESTINATION = 2
 
 # ==================== DATA STORAGE ====================
-# User states {user_id: state}
 user_states = {}
-
-# User data {user_id: {'source': channel_id, 'destination': channel_id, 'forwarding': bool}}
 user_data = {}
-
-# Timeout tracking {user_id: timestamp}
 user_timeout = {}
-
-# Processed messages tracking {message_id: True}
 processed_messages = {}
 
 # ==================== HELPER FUNCTIONS ====================
@@ -49,53 +53,41 @@ processed_messages = {}
 def check_admin_status(chat_id):
     """Check if bot is admin in the given channel"""
     try:
-        # Get channel info
         chat = bot.get_chat(chat_id)
-        
-        # Check bot's member status
         bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
         
         if bot_member.status in ['administrator', 'creator']:
-            # Get channel info
             title = chat.title
             members_count = getattr(chat, 'members_count', 'Unknown')
             chat_type = 'Public' if chat.username else 'Private'
             username = f"@{chat.username}" if chat.username else "None"
-            
             return True, title, members_count, chat_type, username
         else:
             return False, None, None, None, None
-            
     except Exception as e:
-        # Bot not in channel or channel doesn't exist
         print(f"Admin check error: {e}")
         return False, None, None, None, None
 
 def reset_user_state(user_id):
-    """Reset user state and timeout"""
     if user_id in user_states:
         del user_states[user_id]
     if user_id in user_timeout:
         del user_timeout[user_id]
 
 def is_channel_id(text):
-    """Check if text is a valid channel ID"""
     try:
         channel_id = int(text.strip())
-        # Channel IDs usually start with -100
         return str(channel_id).startswith('-100')
     except:
         return False
 
 def get_channel_id_from_text(text):
-    """Extract channel ID from text"""
     try:
         return int(text.strip())
     except:
         return None
 
 def format_channel_info(title, members_count, chat_type, username):
-    """Format channel info for display"""
     info = f"📌 **Channel:** {title}\n"
     info += f"👥 **Members:** {members_count}\n"
     info += f"🔒 **Type:** {chat_type}\n"
@@ -103,7 +95,6 @@ def format_channel_info(title, members_count, chat_type, username):
     return info
 
 def get_main_keyboard():
-    """Create main inline keyboard"""
     keyboard = telebot.types.InlineKeyboardMarkup(row_width=1)
     keyboard.add(
         telebot.types.InlineKeyboardButton("📌 Set Source Channel", callback_data="setup_source"),
@@ -247,22 +238,21 @@ def start_forward(message):
         bot.reply_to(message, "❌ Destination Channel မသတ်မှတ်ရသေးပါ။ /setdestination နဲ့ သတ်မှတ်ပါ။")
         return
     
-    # Check if bot is still admin in both channels
     source_ok, source_title, _, _, _ = check_admin_status(data['source'])
     dest_ok, dest_title, _, _, _ = check_admin_status(data['destination'])
     
     if not source_ok:
-        bot.reply_to(message, f"❌ Source Channel (`{data['source']}`) မှာ Admin မဖြစ်တော့ပါဘူး။ ပြန်စစ်ပါ။", parse_mode='Markdown')
+        bot.reply_to(message, f"❌ Source Channel (`{data['source']}`) မှာ Admin မဖြစ်တော့ပါဘူး။", parse_mode='Markdown')
         return
     
     if not dest_ok:
-        bot.reply_to(message, f"❌ Destination Channel (`{data['destination']}`) မှာ Admin မဖြစ်တော့ပါဘူး။ ပြန်စစ်ပါ။", parse_mode='Markdown')
+        bot.reply_to(message, f"❌ Destination Channel (`{data['destination']}`) မှာ Admin မဖြစ်တော့ပါဘူး။", parse_mode='Markdown')
         return
     
     data['forwarding'] = True
     user_data[user_id] = data
     
-    bot.reply_to(message, f"✅ **Auto-Forward ကို စတင်လိုက်ပါပြီ။**\n\n📌 Source: {source_title}\n📌 Destination: {dest_title}\n\nSource Channel မှာ Video တက်တာနဲ့ Destination Channel ကို ပို့ပေးပါ့မယ်။", parse_mode='Markdown')
+    bot.reply_to(message, f"✅ **Auto-Forward ကို စတင်လိုက်ပါပြီ။**\n\n📌 Source: {source_title}\n📌 Destination: {dest_title}", parse_mode='Markdown')
 
 @bot.message_handler(commands=['stopforward'])
 def stop_forward(message):
@@ -282,7 +272,6 @@ def handle_channel_start(message):
     chat_id = message.chat.id
     chat_title = message.chat.title
     
-    # Check if bot is admin
     is_admin, title, members, chat_type, username = check_admin_status(chat_id)
     
     if is_admin:
@@ -304,25 +293,20 @@ def handle_source_id(message):
     user_id = message.from_user.id
     text = message.text.strip()
     
-    # Check timeout
     if user_id in user_timeout:
         if datetime.now() - user_timeout[user_id] > timedelta(minutes=5):
             reset_user_state(user_id)
             bot.reply_to(message, "⏰ အချိန်ကုန်သွားပါပြီ။ ပြန်ကြိုးစားပါ။ /setsource")
             return
     
-    # Check if it's a valid channel ID
     if not is_channel_id(text):
         bot.reply_to(message, "❌ **မှားယွင်းနေပါတယ်။**\nChannel ID ကို ထည့်ပါ။ (ဥပမာ: -1001234567890)\n\n/cancel ပို့ပြီး ဖျက်သိမ်းနိုင်ပါတယ်။")
         return
     
     channel_id = get_channel_id_from_text(text)
-    
-    # Check if bot is admin
     is_admin, title, members_count, chat_type, username = check_admin_status(channel_id)
     
     if is_admin:
-        # Save source channel
         data = user_data.get(user_id, {})
         data['source'] = channel_id
         user_data[user_id] = data
@@ -339,7 +323,6 @@ def handle_source_id(message):
         if title:
             reply += f"📌 **Channel Name:** {title}\n"
         reply += "\n⚠️ ဒီ Channel မှာ Bot ကို Admin အနေနဲ့ ထည့်ပေးပါ။\n"
-        reply += "Admin ထည့်ပြီးရင် ပြန်ကြိုးစားပါ။\n\n"
         reply += "/cancel ပို့ပြီး ဖျက်သိမ်းနိုင်ပါတယ်။"
         
         bot.reply_to(message, reply, parse_mode='Markdown')
@@ -349,25 +332,20 @@ def handle_destination_id(message):
     user_id = message.from_user.id
     text = message.text.strip()
     
-    # Check timeout
     if user_id in user_timeout:
         if datetime.now() - user_timeout[user_id] > timedelta(minutes=5):
             reset_user_state(user_id)
             bot.reply_to(message, "⏰ အချိန်ကုန်သွားပါပြီ။ ပြန်ကြိုးစားပါ။ /setdestination")
             return
     
-    # Check if it's a valid channel ID
     if not is_channel_id(text):
         bot.reply_to(message, "❌ **မှားယွင်းနေပါတယ်။**\nChannel ID ကို ထည့်ပါ။ (ဥပမာ: -1001234567890)\n\n/cancel ပို့ပြီး ဖျက်သိမ်းနိုင်ပါတယ်။")
         return
     
     channel_id = get_channel_id_from_text(text)
-    
-    # Check if bot is admin
     is_admin, title, members_count, chat_type, username = check_admin_status(channel_id)
     
     if is_admin:
-        # Save destination channel
         data = user_data.get(user_id, {})
         data['destination'] = channel_id
         user_data[user_id] = data
@@ -384,7 +362,6 @@ def handle_destination_id(message):
         if title:
             reply += f"📌 **Channel Name:** {title}\n"
         reply += "\n⚠️ ဒီ Channel မှာ Bot ကို Admin အနေနဲ့ ထည့်ပေးပါ။\n"
-        reply += "Admin ထည့်ပြီးရင် ပြန်ကြိုးစားပါ။\n\n"
         reply += "/cancel ပို့ပြီး ဖျက်သိမ်းနိုင်ပါတယ်။"
         
         bot.reply_to(message, reply, parse_mode='Markdown')
@@ -399,19 +376,15 @@ def handle_setup_callback(call):
     if action == 'source':
         bot.answer_callback_query(call.id)
         set_source_command(call.message)
-        
     elif action == 'dest':
         bot.answer_callback_query(call.id)
         set_destination_command(call.message)
-        
     elif action == 'view':
         bot.answer_callback_query(call.id)
         status_command(call.message)
-        
     elif action == 'start':
         bot.answer_callback_query(call.id)
         start_forward(call.message)
-        
     elif action == 'stop':
         bot.answer_callback_query(call.id)
         stop_forward(call.message)
@@ -420,22 +393,17 @@ def handle_setup_callback(call):
 
 @bot.channel_post_handler(func=lambda message: True)
 def handle_channel_post(message):
-    """Handle new posts in channels"""
-    # Check if message is from a channel
     if message.chat.type not in ['channel']:
         return
     
     chat_id = message.chat.id
     
-    # Find users who have this channel as source
     for user_id, data in user_data.items():
         if data.get('source') == chat_id and data.get('forwarding', False):
             dest_id = data.get('destination')
             if dest_id:
                 try:
-                    # Check if message is video
                     if message.video:
-                        # Copy video with caption
                         bot.copy_message(
                             chat_id=dest_id,
                             from_chat_id=chat_id,
@@ -443,25 +411,33 @@ def handle_channel_post(message):
                             caption=message.caption if message.caption else None
                         )
                         print(f"✅ Video copied from {chat_id} to {dest_id}")
-                    else:
-                        # Only copy video messages (skip others)
-                        pass
                 except Exception as e:
                     print(f"❌ Error copying message: {e}")
 
-# ==================== MAIN ====================
+# ==================== RUN BOT WITH FLASK ====================
 
-print("=" * 50)
-print("🤖 Channel Auto-Forward Bot")
-print("=" * 50)
-print(f"📌 Bot Username: @{bot.get_me().username}")
-print("📌 Bot is running. Press Ctrl+C to stop.")
-print("=" * 50)
+def run_bot():
+    """Run Telegram bot in background thread"""
+    print("🤖 Bot polling started...")
+    try:
+        bot.polling(none_stop=True, interval=1, timeout=30)
+    except Exception as e:
+        print(f"❌ Bot polling error: {e}")
 
-try:
-    # Use polling with error handling
-    bot.polling(none_stop=True, interval=1, timeout=30)
-except KeyboardInterrupt:
-    print("\n👋 Bot stopped.")
-except Exception as e:
-    print(f"❌ Error: {e}")
+if __name__ == "__main__":
+    print("=" * 50)
+    print("🤖 Channel Auto-Forward Bot with Flask")
+    print("=" * 50)
+    print(f"📌 Bot Username: @{bot.get_me().username}")
+    print("📌 Flask server running on port 10000")
+    print("📌 Press Ctrl+C to stop")
+    print("=" * 50)
+    
+    # Start bot in background thread
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+    
+    # Run Flask server
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
